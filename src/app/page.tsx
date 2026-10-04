@@ -103,7 +103,13 @@ export default function Home() {
       ]);
       const reader = new BrowserMultiFormatReader(hints);
       const controls = await reader.decodeFromConstraints(
-        { video: { facingMode: "environment" } },
+        {
+          video: {
+            facingMode: "environment",
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+        },
         videoRef.current!,
         (scanResult) => {
           if (scanResult) {
@@ -115,6 +121,18 @@ export default function Home() {
         },
       );
       controlsRef.current = controls;
+
+      const selectAllTracks = (track: MediaStreamTrack) => [track];
+      const capabilities = controls.streamVideoCapabilitiesGet?.(
+        selectAllTracks,
+      ) as (MediaTrackCapabilities & { focusMode?: string[] }) | undefined;
+
+      if (capabilities?.focusMode?.includes("continuous")) {
+        controls.streamVideoConstraintsApply?.(
+          { advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet] },
+          selectAllTracks,
+        );
+      }
     } catch {
       setError("無法啟動相機,請確認已授權相機權限");
       setIsScanning(false);
