@@ -209,6 +209,12 @@ export default function Home() {
               </p>
             </div>
           )}
+
+          {isScanning && (
+            <p className="text-center text-xs text-zinc-500 dark:text-zinc-500">
+              畫面模糊的話,請將條碼拉遠到約 10 公分以上再掃描
+            </p>
+          )}
         </form>
 
         {error && (
