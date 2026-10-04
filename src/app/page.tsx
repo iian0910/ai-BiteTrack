@@ -1,8 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import type { IScannerControls } from "@zxing/browser";
-import type { DecodeHintType } from "@zxing/library";
+import { useState } from "react";
 
 interface Nutriments {
   energyKcal: number | null;
@@ -41,22 +39,12 @@ const NUTRIENT_ROWS: { key: keyof Nutriments; label: string; unit: string }[] = 
 
 export default function Home() {
   const [barcodeInput, setBarcodeInput] = useState("");
-  const [isScanning, setIsScanning] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<NutritionResult | null>(null);
 
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const controlsRef = useRef<IScannerControls | null>(null);
-
-  useEffect(() => {
-    return () => {
-      controlsRef.current?.stop();
-    };
-  }, []);
-
-  async function handleSearch(code?: string) {
-    const target = (code ?? barcodeInput).trim();
+  async function handleSearch() {
+    const target = barcodeInput.trim();
     if (!/^\d{8,14}$/.test(target)) {
       setError("請輸入 8 到 14 位數字的條碼");
       return;
@@ -81,72 +69,6 @@ export default function Home() {
     }
   }
 
-  function stopScanning() {
-    controlsRef.current?.stop();
-    controlsRef.current = null;
-    setIsScanning(false);
-  }
-
-  async function startScanning() {
-    setError(null);
-    setIsScanning(true);
-
-    try {
-      const { BrowserMultiFormatReader } = await import("@zxing/browser");
-      const { BarcodeFormat, DecodeHintType } = await import("@zxing/library");
-      const hints = new Map<DecodeHintType, unknown>();
-      hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-        BarcodeFormat.EAN_13,
-        BarcodeFormat.EAN_8,
-        BarcodeFormat.UPC_A,
-        BarcodeFormat.UPC_E,
-      ]);
-      const reader = new BrowserMultiFormatReader(hints);
-      const controls = await reader.decodeFromConstraints(
-        {
-          video: {
-            facingMode: "environment",
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-        },
-        videoRef.current!,
-        (scanResult) => {
-          if (scanResult) {
-            const text = scanResult.getText();
-            stopScanning();
-            setBarcodeInput(text);
-            void handleSearch(text);
-          }
-        },
-      );
-      controlsRef.current = controls;
-
-      const selectAllTracks = (track: MediaStreamTrack) => [track];
-      const capabilities = controls.streamVideoCapabilitiesGet?.(
-        selectAllTracks,
-      ) as (MediaTrackCapabilities & { focusMode?: string[] }) | undefined;
-
-      if (capabilities?.focusMode?.includes("continuous")) {
-        controls.streamVideoConstraintsApply?.(
-          { advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet] },
-          selectAllTracks,
-        );
-      }
-    } catch {
-      setError("無法啟動相機,請確認已授權相機權限");
-      setIsScanning(false);
-    }
-  }
-
-  function toggleScanning() {
-    if (isScanning) {
-      stopScanning();
-    } else {
-      void startScanning();
-    }
-  }
-
   return (
     <div className="flex flex-1 flex-col items-center bg-zinc-50 px-4 py-10 font-sans dark:bg-black sm:px-8">
       <div className="flex w-full max-w-xl flex-col gap-6">
@@ -155,7 +77,7 @@ export default function Home() {
             ai-BiteTrack
           </h1>
           <p className="text-sm text-zinc-600 dark:text-zinc-400">
-            輸入或掃描條碼,查詢台灣販售商品的營養成分
+            輸入條碼,查詢台灣販售商品的營養成分
           </p>
         </header>
 
@@ -184,37 +106,6 @@ export default function Home() {
               {loading ? "查詢中…" : "查詢"}
             </button>
           </div>
-
-          <button
-            type="button"
-            onClick={toggleScanning}
-            className="self-start rounded-full border border-black/[.08] px-4 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-black/[.04] dark:border-white/[.145] dark:text-zinc-300 dark:hover:bg-[#1a1a1a]"
-          >
-            {isScanning ? "關閉相機" : "使用相機掃描"}
-          </button>
-
-          {isScanning && (
-            <div className="relative mx-auto w-full max-w-sm overflow-hidden rounded-xl bg-black">
-              <video
-                ref={videoRef}
-                className="aspect-video w-full object-cover"
-                muted
-                playsInline
-              />
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                <div className="h-[38%] w-[82%] rounded-lg border-2 border-emerald-400 shadow-[0_0_0_9999px_rgba(0,0,0,0.4)]" />
-              </div>
-              <p className="pointer-events-none absolute bottom-2 left-0 right-0 text-center text-xs text-white">
-                將條碼置於框內,保持適當距離
-              </p>
-            </div>
-          )}
-
-          {isScanning && (
-            <p className="text-center text-xs text-zinc-500 dark:text-zinc-500">
-              畫面模糊的話,請將條碼拉遠到約 10 公分以上再掃描
-            </p>
-          )}
         </form>
 
         {error && (
