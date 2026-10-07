@@ -48,17 +48,19 @@ export default function BarcodeScanner({
           navigator.mediaDevices.getUserMedia({
             audio: false,
             video: {
-              facingMode: { ideal: "environment" },
+              facingMode: "environment",
+              // 連續對焦,近距離拍條碼較不易模糊;不支援的裝置會忽略此設定
+              focusMode: "continuous",
               width: { ideal: 1920 },
               height: { ideal: 1080 },
-            },
+            } as MediaTrackConstraints,
           })
           // 立即記下串流,元件卸載時才關得掉相機
           .then((s) => (stream = s)),
         ]);
         if (cancelled) return;
 
-        // 支援的裝置開啟連續對焦,近距離拍條碼較不易模糊
+        // 部分瀏覽器開啟相機時不套用 focusMode,串流啟動後再設定一次
         const [track] = media.getVideoTracks();
         const caps = track.getCapabilities?.() as
           | (MediaTrackCapabilities & { focusMode?: string[] })
