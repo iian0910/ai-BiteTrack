@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "ai-BiteTrack",
-  description: "輸入或掃描條碼,查詢商品的營養成分",
+  description: "記錄三餐飲食,計算每日碳水、脂肪與蛋白質攝取量",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

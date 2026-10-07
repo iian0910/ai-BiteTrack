@@ -1,148 +1,106 @@
 "use client";
 
-import { useState } from "react";
-import BarcodeScanner from "@/components/BarcodeScanner";
-import CreateProductModal from "@/components/CreateProductModal";
-import { useProducts } from "@/lib/products";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import AddFoodModal from "@/components/AddFoodModal";
+import {
+  entryAmount,
+  MEALS,
+  round1,
+  todayString,
+  type MacroKey,
+  type MealEntry,
+  type MealType,
+} from "@/lib/meals";
 
-// OFF 回傳 number;自建商品為 Decimal128 轉成的字串,原樣顯示以保留小數位數
-interface Nutriments {
-  energyKcal: number | string | null;
-  proteins: number | string | null;
-  fat: number | string | null;
-  carbohydrates: number | string | null;
-}
-
-interface NutritionResult {
-  barcode: string;
-  productName: string;
-  brands: string | null;
-  quantity: string | null;
-  servingSize: string | null;
-  imageUrl: string | null;
-  nutriscoreGrade: string | null;
-  source: "openfoodfacts" | "custom";
-  nutriments: Nutriments;
-}
-
-const NUTRIENT_ROWS: { key: keyof Nutriments; label: string; unit: string }[] = [
-  { key: "energyKcal", label: "熱量", unit: "kcal" },
-  { key: "proteins", label: "蛋白質", unit: "g" },
-  { key: "fat", label: "脂肪", unit: "g" },
+const SUMMARY: { key: MacroKey; label: string; unit: string }[] = [
   { key: "carbohydrates", label: "碳水化合物", unit: "g" },
+  { key: "fat", label: "脂肪", unit: "g" },
+  { key: "proteins", label: "蛋白質", unit: "g" },
+  { key: "energyKcal", label: "熱量", unit: "kcal" },
 ];
 
+const noopSubscribe = () => () => {};
+
+function total(entries: MealEntry[], key: MacroKey): number {
+  return round1(entries.reduce((sum, e) => sum + entryAmount(e, key), 0));
+}
+
 export default function Home() {
-  const [barcodeInput, setBarcodeInput] = useState("");
-  const [loading, setLoading] = useState(false);
+  // 以使用者裝置的時區決定「今天」;伺服器端時區可能不同,先回傳空字串避免 hydration 不一致
+  const date = useSyncExternalStore(noopSubscribe, todayString, () => "");
+  const [entries, setEntries] = useState<MealEntry[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<NutritionResult | null>(null);
-  // 查無資料時記下條碼,供「新增」帶入建立表單
-  const [notFoundBarcode, setNotFoundBarcode] = useState<string | null>(null);
-  // null 表示建立視窗關閉;字串為預先帶入的條碼
-  const [createBarcode, setCreateBarcode] = useState<string | null>(null);
-  const [scanning, setScanning] = useState(false);
-  const products = useProducts();
+  // null 表示新增視窗關閉;否則為要新增到哪一餐
+  const [addingTo, setAddingTo] = useState<MealType | null>(null);
 
-  async function handleSearch(target = barcodeInput.trim()) {
-    if (!/^\d{8,14}$/.test(target)) {
-      setError("請輸入 8 到 14 位數字的條碼");
-      return;
-    }
+  useEffect(() => {
+    if (!date) return;
+    let cancelled = false;
+    fetch(`/api/meals?date=${date}`)
+      .then(async (res) => {
+        const data = await res.json();
+        if (cancelled) return;
+        if (!res.ok) setError(data.error ?? "讀取飲食紀錄失敗");
+        else setEntries(data as MealEntry[]);
+      })
+      .catch(() => {
+        if (!cancelled) setError("網路連線發生問題,請重新整理頁面");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [date]);
 
-    setLoading(true);
+  async function handleDelete(entry: MealEntry) {
+    // 先從畫面移除,失敗再放回去
+    setEntries((prev) => prev.filter((e) => e.id !== entry.id));
     setError(null);
-    setResult(null);
-    setNotFoundBarcode(null);
-
     try {
-      const res = await fetch(`/api/nutrition/${target}`);
-      const data = await res.json();
-      if (res.status === 404 && data.notFound) {
-        setNotFoundBarcode(target);
-        return;
-      }
-      if (!res.ok) {
-        setError(data.error ?? "查詢失敗,請稍後再試");
-        return;
-      }
-      setResult(data as NutritionResult);
+      const res = await fetch(`/api/meals/${entry.id}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 404) throw new Error();
     } catch {
-      setError("網路連線發生問題,請稍後再試");
-    } finally {
-      setLoading(false);
+      setEntries((prev) =>
+        [...prev, entry].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+      );
+      setError("刪除紀錄失敗,請稍後再試");
     }
   }
 
   return (
     <div className="flex flex-1 flex-col items-center bg-zinc-50 px-4 py-10 font-sans dark:bg-black sm:px-8">
       <div className="flex w-full max-w-xl flex-col gap-6">
-        <header className="flex items-start justify-between gap-4">
-          <div className="flex flex-col gap-1">
-            <h1 className="text-2xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">
-              ai-BiteTrack
-            </h1>
-            <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              輸入或掃描條碼,查詢商品的營養成分
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setCreateBarcode("")}
-            className="shrink-0 rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
-          >
-            + 建立
-          </button>
+        <header className="flex flex-col gap-1">
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">
+            ai-BiteTrack
+          </h1>
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+            {date} · 今日飲食紀錄
+          </p>
         </header>
 
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void handleSearch();
-          }}
-          className="flex flex-col gap-3 rounded-2xl border border-black/[.08] bg-white p-4 dark:border-white/[.145] dark:bg-zinc-900"
-        >
-          <div className="flex gap-2">
-            <input
-              type="text"
-              inputMode="numeric"
-              pattern="\d*"
-              placeholder="輸入條碼,例如 4710088425556"
-              value={barcodeInput}
-              onChange={(e) => setBarcodeInput(e.target.value.replace(/\D/g, ""))}
-              className="flex-1 rounded-full border border-black/[.08] bg-transparent px-4 py-2.5 text-sm text-zinc-950 outline-none focus:border-zinc-950 dark:border-white/[.145] dark:text-zinc-50 dark:focus:border-zinc-50"
-            />
-            <button
-              type="submit"
-              disabled={loading}
-              className="rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
-            >
-              {loading ? "查詢中…" : "查詢"}
-            </button>
-          </div>
-
-          {scanning ? (
-            <BarcodeScanner
-              onClose={() => setScanning(false)}
-              onDetected={(code) => {
-                setScanning(false);
-                setBarcodeInput(code);
-                void handleSearch(code);
-              }}
-            />
-          ) : (
-            <button
-              type="button"
-              onClick={() => {
-                setError(null);
-                setScanning(true);
-              }}
-              className="self-start rounded-full border border-black/[.08] px-4 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-black/[.04] dark:border-white/[.145] dark:text-zinc-300 dark:hover:bg-[#1a1a1a]"
-            >
-              使用相機掃描
-            </button>
-          )}
-        </form>
+        <section className="flex flex-col gap-3 rounded-2xl border border-black/[.08] bg-white p-4 dark:border-white/[.145] dark:bg-zinc-900">
+          <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+            今日攝取
+          </h2>
+          <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {SUMMARY.map(({ key, label, unit }) => (
+              <div
+                key={key}
+                className="flex flex-col gap-0.5 rounded-xl bg-zinc-100 px-3 py-2.5 dark:bg-zinc-800"
+              >
+                <dt className="text-xs text-zinc-600 dark:text-zinc-400">{label}</dt>
+                <dd className="text-xl font-semibold tabular-nums text-zinc-950 dark:text-zinc-50">
+                  {total(entries, key)}
+                  <span className="ml-1 text-xs font-normal text-zinc-500">{unit}</span>
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </section>
 
         {error && (
           <p className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-400">
@@ -150,117 +108,73 @@ export default function Home() {
           </p>
         )}
 
-        {notFoundBarcode && (
-          <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-100 px-4 py-3 text-sm text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
-            <p>查無相關資訊, 請問要新增嗎?</p>
-            <button
-              type="button"
-              onClick={() => setCreateBarcode(notFoundBarcode)}
-              className="shrink-0 rounded-full bg-foreground px-4 py-1.5 text-sm font-medium text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
+        {MEALS.map(({ key: meal, label }) => {
+          const items = entries.filter((e) => e.meal === meal);
+          return (
+            <section
+              key={meal}
+              className="flex flex-col gap-3 rounded-2xl border border-black/[.08] bg-white p-4 dark:border-white/[.145] dark:bg-zinc-900"
             >
-              新增
-            </button>
-          </div>
-        )}
-
-        {result && (
-          <div className="flex flex-col gap-4 rounded-2xl border border-black/[.08] bg-white p-5 dark:border-white/[.145] dark:bg-zinc-900">
-            <div className="flex items-start gap-4">
-              {result.imageUrl && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={result.imageUrl}
-                  alt={result.productName}
-                  className="h-20 w-20 rounded-lg object-cover"
-                />
-              )}
-              <div className="flex flex-col gap-0.5">
-                <h2 className="text-lg font-semibold text-zinc-950 dark:text-zinc-50">
-                  {result.productName}
-                </h2>
-                {result.brands && (
-                  <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                    {result.brands}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-col">
+                  <h2 className="font-semibold text-zinc-950 dark:text-zinc-50">{label}</h2>
+                  <p className="text-xs tabular-nums text-zinc-500">
+                    {total(items, "energyKcal")} kcal · 碳水 {total(items, "carbohydrates")} g · 脂肪 {total(items, "fat")} g · 蛋白質 {total(items, "proteins")} g
                   </p>
-                )}
-                {result.quantity && (
-                  <p className="text-sm text-zinc-500 dark:text-zinc-500">
-                    {result.quantity}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {result.source === "custom" && (
-              <p className="rounded-xl bg-zinc-100 px-4 py-3 text-sm text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-                此為自行建立的商品資料
-              </p>
-            )}
-
-            <div className="flex flex-col gap-1">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-500">
-                每份{result.servingSize ? `(${result.servingSize})` : ""} 營養成分
-              </p>
-              <table className="w-full text-sm">
-                <tbody>
-                  {NUTRIENT_ROWS.map(({ key, label, unit }) => (
-                    <tr
-                      key={key}
-                      className="border-b border-black/[.06] last:border-none dark:border-white/[.08]"
-                    >
-                      <td className="py-2 text-zinc-600 dark:text-zinc-400">
-                        {label}
-                      </td>
-                      <td className="py-2 text-right font-medium text-zinc-950 dark:text-zinc-50">
-                        {result.nutriments[key] !== null
-                          ? `${result.nutriments[key]} ${unit}`
-                          : "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {products.length > 0 && (
-          <section className="flex flex-col gap-3">
-            <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-500">
-              我建立的商品
-            </h2>
-            <ul className="flex flex-col gap-3">
-              {products.map((p) => (
-                <li
-                  key={p.barcode}
-                  className="flex flex-col gap-2 rounded-2xl border border-black/[.08] bg-white p-4 dark:border-white/[.145] dark:bg-zinc-900"
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAddingTo(meal)}
+                  className="shrink-0 rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc]"
                 >
-                  <div className="flex items-baseline justify-between gap-2">
-                    <p className="font-medium text-zinc-950 dark:text-zinc-50">
-                      {p.name || "未命名商品"}
-                    </p>
-                    <p className="font-mono text-xs text-zinc-500">{p.barcode}</p>
-                  </div>
-                  <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                    {p.totalGrams} g · {p.energyKcal} kcal · 蛋白質 {p.proteins} g · 脂肪 {p.fat} g · 碳水 {p.carbohydrates} g
-                  </p>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
+                  + 新增
+                </button>
+              </div>
+
+              {loading ? (
+                <p className="text-sm text-zinc-500">載入中…</p>
+              ) : items.length === 0 ? (
+                <p className="text-sm text-zinc-500">尚未記錄</p>
+              ) : (
+                <ul className="flex flex-col divide-y divide-black/[.06] dark:divide-white/[.08]">
+                  {items.map((entry) => (
+                    <li key={entry.id} className="flex items-center gap-3 py-2.5">
+                      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <p className="truncate text-sm font-medium text-zinc-950 dark:text-zinc-50">
+                          {entry.name}
+                          {entry.servings !== 1 && (
+                            <span className="ml-1.5 font-normal text-zinc-500">
+                              × {entry.servings}
+                            </span>
+                          )}
+                        </p>
+                        <p className="text-xs tabular-nums text-zinc-500">
+                          {round1(entryAmount(entry, "energyKcal"))} kcal · 碳水 {round1(entryAmount(entry, "carbohydrates"))} g · 脂肪 {round1(entryAmount(entry, "fat"))} g · 蛋白質 {round1(entryAmount(entry, "proteins"))} g
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleDelete(entry)}
+                        aria-label={`刪除 ${entry.name}`}
+                        className="shrink-0 rounded-full px-2 text-xl leading-none text-zinc-400 hover:text-red-600 dark:hover:text-red-400"
+                      >
+                        ×
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          );
+        })}
       </div>
 
-      {/* 每次開啟都重新掛載,才能帶入對應的條碼 */}
-      {createBarcode !== null && (
-        <CreateProductModal
-          open
-          initialBarcode={createBarcode}
-          onClose={() => setCreateBarcode(null)}
-          onCreated={(code) => {
-            // 剛新增的正是查無資料的條碼時,直接重新查詢顯示結果
-            if (code === notFoundBarcode) void handleSearch(code);
-          }}
+      {addingTo !== null && (
+        <AddFoodModal
+          meal={addingTo}
+          date={date}
+          onClose={() => setAddingTo(null)}
+          onAdded={(entry) => setEntries((prev) => [...prev, entry])}
         />
       )}
     </div>

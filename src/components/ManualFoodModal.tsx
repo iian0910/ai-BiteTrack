@@ -2,10 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { normalizeDecimal } from "@/lib/decimal";
-import { addProduct } from "@/lib/products";
+import { BARCODE_PATTERN, type FoodResult } from "@/lib/meals";
 
 const FIXED_FIELDS = [
-  { key: "totalGrams", label: "總克數", unit: "g" },
+  { key: "totalGrams", label: "每份克數", unit: "g" },
   { key: "energyKcal", label: "熱量", unit: "kcal" },
   { key: "proteins", label: "蛋白質", unit: "g" },
   { key: "fat", label: "脂肪", unit: "g" },
@@ -25,52 +25,56 @@ const EMPTY_FIXED: Record<FixedKey, string> = {
 const inputClass =
   "w-full rounded-lg border border-black/[.08] bg-transparent px-3 py-2 text-sm text-zinc-950 outline-none focus:border-zinc-950 dark:border-white/[.145] dark:text-zinc-50 dark:focus:border-zinc-50";
 
-export default function CreateProductModal({
-  open,
-  onClose,
+export default function ManualFoodModal({
+  title,
   initialBarcode = "",
-  onCreated,
+  initialName = "",
+  onClose,
+  onSubmit,
 }: {
-  open: boolean;
-  onClose: () => void;
+  title: string;
   initialBarcode?: string;
-  onCreated?: (barcode: string) => void;
+  initialName?: string;
+  onClose: () => void;
+  /** 送出手動輸入的食物與份數;回傳錯誤訊息時保留視窗,成功(null)時關閉 */
+  onSubmit: (food: FoodResult, servings: number) => Promise<string | null>;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [barcode, setBarcode] = useState(initialBarcode);
-  const [name, setName] = useState("");
+  const [name, setName] = useState(initialName);
+  const [servings, setServings] = useState("1");
   const [fixed, setFixed] = useState(EMPTY_FIXED);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (open && !dialog.open) dialog.showModal();
-    if (!open && dialog.open) dialog.close();
-  }, [open]);
-
-  function reset() {
-    setBarcode("");
-    setName("");
-    setFixed(EMPTY_FIXED);
-    setError(null);
-  }
+    dialogRef.current?.showModal();
+  }, []);
 
   function handleClose() {
     if (saving) return;
-    reset();
     onClose();
   }
 
   async function handleSubmit() {
+    // 條碼為選填,有填才檢查格式;沒有條碼的食物只能以名稱查詢,名稱改為必填
     const code = barcode.trim();
-    if (!/^\d{8,14}$/.test(code)) {
-      setError("請輸入 8 到 14 位數字的條碼");
+    const trimmedName = name.trim();
+    if (code && !BARCODE_PATTERN.test(code)) {
+      setError("條碼須為 8 到 14 位數字,或留空不填");
+      return;
+    }
+    if (!code && !trimmedName) {
+      setError("未填寫條碼時,請填寫商品名稱");
       return;
     }
 
-    // 以字串送出,保留使用者輸入的小數位數
+    const count = Number(servings);
+    if (!Number.isFinite(count) || count <= 0) {
+      setError("份數須為大於 0 的數字");
+      return;
+    }
+
     const amounts = {} as Record<FixedKey, string>;
     for (const { key, label } of FIXED_FIELDS) {
       const n = normalizeDecimal(fixed[key]);
@@ -81,22 +85,32 @@ export default function CreateProductModal({
       amounts[key] = n;
     }
 
-    // 重複條碼由伺服器端的唯一索引把關
     setSaving(true);
     setError(null);
-    const saveError = await addProduct({
-      barcode: code,
-      name: name.trim(),
-      ...amounts,
-    });
+    const saveError = await onSubmit(
+      {
+        barcode: code || null,
+        productName: trimmedName || "未命名商品",
+        brands: null,
+        quantity: null,
+        servingSize: `${amounts.totalGrams} g`,
+        imageUrl: null,
+        source: "custom",
+        nutriments: {
+          energyKcal: amounts.energyKcal,
+          proteins: amounts.proteins,
+          fat: amounts.fat,
+          carbohydrates: amounts.carbohydrates,
+        },
+      },
+      count,
+    );
     setSaving(false);
     if (saveError) {
       setError(saveError);
       return;
     }
-    reset();
     onClose();
-    onCreated?.(code);
   }
 
   return (
@@ -120,7 +134,7 @@ export default function CreateProductModal({
         className="flex max-h-[85vh] flex-col"
       >
         <header className="flex items-center justify-between border-b border-black/[.08] px-5 py-4 dark:border-white/[.145]">
-          <h2 className="text-lg font-semibold">建立商品</h2>
+          <h2 className="text-lg font-semibold">{title}</h2>
           <button
             type="button"
             onClick={handleClose}
@@ -134,23 +148,37 @@ export default function CreateProductModal({
         <div className="flex flex-col gap-5 overflow-y-auto px-5 py-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="flex flex-col gap-1 text-sm">
-              <span className="text-zinc-600 dark:text-zinc-400">商品條碼 *</span>
+              <span className="text-zinc-600 dark:text-zinc-400">商品條碼</span>
               <input
                 type="text"
                 inputMode="numeric"
-                placeholder="例如 4710088425556"
+                placeholder="選填,例如 4710088425556"
                 value={barcode}
                 onChange={(e) => setBarcode(e.target.value.replace(/\D/g, ""))}
                 className={inputClass}
               />
             </label>
             <label className="flex flex-col gap-1 text-sm">
-              <span className="text-zinc-600 dark:text-zinc-400">商品名稱</span>
+              <span className="text-zinc-600 dark:text-zinc-400">
+                商品名稱{barcode.trim() ? "" : " *"}
+              </span>
               <input
                 type="text"
-                placeholder="選填"
+                placeholder={barcode.trim() ? "選填" : "未填條碼時必填"}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                className={inputClass}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">份數 *</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="any"
+                value={servings}
+                onChange={(e) => setServings(e.target.value)}
                 className={inputClass}
               />
             </label>
@@ -158,7 +186,7 @@ export default function CreateProductModal({
 
           <section className="flex flex-col gap-2">
             <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
-              營養成分
+              每份營養成分
             </h3>
             <div className="grid grid-cols-2 gap-3">
               {FIXED_FIELDS.map(({ key, label, unit }) => (
@@ -202,7 +230,7 @@ export default function CreateProductModal({
             disabled={saving}
             className="rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
           >
-            {saving ? "建立中…" : "建立"}
+            {saving ? "新增中…" : "新增"}
           </button>
         </footer>
       </form>
