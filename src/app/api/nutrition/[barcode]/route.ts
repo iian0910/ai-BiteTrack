@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { fromProductDoc, getProductsCollection } from "@/lib/mongodb";
 
 const OFF_BASE_URL = "https://tw.openfoodfacts.org/api/v2/product";
 const USER_AGENT = "ai-BiteTrack/0.1 (+https://github.com/ai-bitetrack)";
@@ -39,9 +40,33 @@ function toNumber(value: unknown): number | null {
   return typeof n === "number" && Number.isFinite(n) ? n : null;
 }
 
-// OFF 的 sodium_100g 單位是公克,換算成毫克以符合台灣營養標示慣例
-function gramsToMilligrams(value: number | null): number | null {
-  return value === null ? null : Math.round(value * 1000 * 100) / 100;
+// 查詢使用者自行建立的商品,轉成與 OFF 相同的回應格式
+async function findSavedProduct(barcode: string) {
+  const collection = await getProductsCollection();
+  const doc = await collection.findOne(
+    { barcode },
+    { projection: { _id: 0 } },
+  );
+  if (!doc) return null;
+  const product = fromProductDoc(doc);
+
+  return {
+    barcode,
+    productName: product.name || "未命名商品",
+    brands: null,
+    quantity: null,
+    servingSize: `${product.totalGrams} g`,
+    imageUrl: null,
+    nutriscoreGrade: null,
+    isTaiwan: true,
+    source: "custom" as const,
+    nutriments: {
+      energyKcal: product.energyKcal,
+      proteins: product.proteins,
+      fat: product.fat,
+      carbohydrates: product.carbohydrates,
+    },
+  };
 }
 
 export async function GET(
@@ -55,6 +80,14 @@ export async function GET(
       { error: "條碼格式不正確,請輸入 8 到 14 位數字" },
       { status: 400 },
     );
+  }
+
+  // 先查使用者自建的商品,找不到才查 OFF;資料庫異常時仍改查 OFF,不中斷查詢
+  try {
+    const saved = await findSavedProduct(barcode);
+    if (saved) return NextResponse.json(saved);
+  } catch (err) {
+    console.error("查詢自建商品失敗", err);
   }
 
   let offResponse: Response;
@@ -87,7 +120,7 @@ export async function GET(
       );
     }
     return NextResponse.json(
-      { error: "查無此條碼對應的商品" },
+      { error: "查無相關資訊", notFound: true },
       { status: 404 },
     );
   }
@@ -105,16 +138,12 @@ export async function GET(
     imageUrl: product.image_front_url ?? null,
     nutriscoreGrade: product.nutriscore_grade ?? null,
     isTaiwan,
+    source: "openfoodfacts",
     nutriments: {
       energyKcal: toNumber(nutriments["energy-kcal_serving"]),
       proteins: toNumber(nutriments["proteins_serving"]),
       fat: toNumber(nutriments["fat_serving"]),
-      saturatedFat: toNumber(nutriments["saturated-fat_serving"]),
       carbohydrates: toNumber(nutriments["carbohydrates_serving"]),
-      sugars: toNumber(nutriments["sugars_serving"]),
-      fiber: toNumber(nutriments["fiber_serving"]),
-      salt: toNumber(nutriments["salt_serving"]),
-      sodium: gramsToMilligrams(toNumber(nutriments["sodium_serving"])),
     },
   });
 }
