@@ -16,7 +16,7 @@ const REQUIRED_MATCHES = 2;
  */
 export function createBarcodeDecoder() {
   const hints = new Map<DecodeHintType, unknown>([
-    // 台灣商品常見的一維條碼格式
+    // 食品包裝常見的一維條碼格式
     [
       DecodeHintType.POSSIBLE_FORMATS,
       [

@@ -21,7 +21,6 @@ interface NutritionResult {
   servingSize: string | null;
   imageUrl: string | null;
   nutriscoreGrade: string | null;
-  isTaiwan: boolean;
   source: "openfoodfacts" | "custom";
   nutriments: Nutriments;
 }
@@ -84,7 +83,7 @@ export default function Home() {
               ai-BiteTrack
             </h1>
             <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              輸入或掃描條碼,查詢台灣販售商品的營養成分
+              輸入或掃描條碼,查詢商品的營養成分
             </p>
           </div>
           <button
@@ -195,12 +194,6 @@ export default function Home() {
             {result.source === "custom" && (
               <p className="rounded-xl bg-zinc-100 px-4 py-3 text-sm text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
                 此為自行建立的商品資料
-              </p>
-            )}
-
-            {!result.isTaiwan && (
-              <p className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
-                此商品未標註為台灣販售,營養資訊僅供參考
               </p>
             )}
 

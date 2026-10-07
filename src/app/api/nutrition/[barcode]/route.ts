@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { fromProductDoc, getProductsCollection } from "@/lib/mongodb";
 
-const OFF_BASE_URL = "https://tw.openfoodfacts.org/api/v2/product";
+const OFF_BASE_URL = "https://world.openfoodfacts.org/api/v2/product";
 const USER_AGENT = "ai-BiteTrack/0.1 (+https://github.com/ai-bitetrack)";
 const FIELDS = [
   "product_name",
@@ -11,7 +11,6 @@ const FIELDS = [
   "serving_size",
   "image_front_url",
   "nutriscore_grade",
-  "countries_tags",
   "nutriments",
 ].join(",");
 
@@ -25,7 +24,6 @@ interface OffProduct {
   serving_size?: string;
   image_front_url?: string;
   nutriscore_grade?: string;
-  countries_tags?: string[];
   nutriments?: OffNutriments;
 }
 
@@ -58,7 +56,6 @@ async function findSavedProduct(barcode: string) {
     servingSize: `${product.totalGrams} g`,
     imageUrl: null,
     nutriscoreGrade: null,
-    isTaiwan: true,
     source: "custom" as const,
     nutriments: {
       energyKcal: product.energyKcal,
@@ -127,7 +124,6 @@ export async function GET(
 
   const product = data.product;
   const nutriments = product.nutriments ?? {};
-  const isTaiwan = (product.countries_tags ?? []).includes("en:taiwan");
 
   return NextResponse.json({
     barcode,
@@ -137,7 +133,6 @@ export async function GET(
     servingSize: product.serving_size ?? null,
     imageUrl: product.image_front_url ?? null,
     nutriscoreGrade: product.nutriscore_grade ?? null,
-    isTaiwan,
     source: "openfoodfacts",
     nutriments: {
       energyKcal: toNumber(nutriments["energy-kcal_serving"]),
