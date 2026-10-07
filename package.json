@@ -9,7 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "html5-qrcode": "^2.3.8",
+    "@zxing/library": "^0.23.0",
     "mongodb": "^7.7.0",
     "next": "16.3.8",
     "react": "19.2.8",

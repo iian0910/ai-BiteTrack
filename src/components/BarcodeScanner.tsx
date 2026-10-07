@@ -1,23 +1,22 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
-import type { Html5Qrcode } from "html5-qrcode";
+import { useEffect, useRef, useState } from "react";
 
-// 串接所有實例的啟動與關閉,避免 Strict Mode 重複掛載或快速關閉再開啟時,
-// 新舊實例同時搶用相機
-let lifecycle: Promise<unknown> = Promise.resolve();
+const SCAN_INTERVAL_MS = 100;
+// 只辨識畫面中央、與掃描框相同比例的區域,減少雜訊也加快速度
+const CROP_WIDTH_RATIO = 0.8;
+const CROP_HEIGHT_RATIO = 0.4;
+// 裁切後的寬度上限,過大的影像解碼較慢但對辨識率幫助有限
+const MAX_DECODE_WIDTH = 1280;
 
 function cameraErrorMessage(err: unknown): string {
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
     return "相機僅能在 HTTPS 或 localhost 下使用";
   }
-  // html5-qrcode 會把原始錯誤包成字串,以錯誤名稱判斷
-  const text = String(err);
-  if (text.includes("NotAllowedError")) return "未取得相機權限,請在瀏覽器設定中允許使用相機";
-  if (text.includes("NotFoundError") || text.includes("OverconstrainedError")) {
-    return "找不到可用的相機";
-  }
-  if (text.includes("NotReadableError")) return "相機正被其他程式使用中";
+  const name = err instanceof DOMException ? err.name : "";
+  if (name === "NotAllowedError") return "未取得相機權限,請在瀏覽器設定中允許使用相機";
+  if (name === "NotFoundError" || name === "OverconstrainedError") return "找不到可用的相機";
+  if (name === "NotReadableError") return "相機正被其他程式使用中";
   return "無法啟動相機,請稍後再試";
 }
 
@@ -28,11 +27,10 @@ export default function BarcodeScanner({
   onDetected: (code: string) => void;
   onClose: () => void;
 }) {
-  // html5-qrcode 以 id 尋找要掛載畫面的元素
-  const elementId = `scanner-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const videoRef = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(true);
-  // 讓掃描 callback 永遠呼叫到最新的 onDetected,而不必在它改變時重啟相機
+  // 讓掃描迴圈永遠呼叫到最新的 callback,而不必在 callback 改變時重啟相機
   const onDetectedRef = useRef(onDetected);
   useEffect(() => {
     onDetectedRef.current = onDetected;
@@ -40,62 +38,87 @@ export default function BarcodeScanner({
 
   useEffect(() => {
     let cancelled = false;
-    let scanner: Html5Qrcode | null = null;
+    let stream: MediaStream | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
     async function start() {
-      if (cancelled) return;
       try {
-        const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
-        if (cancelled) return;
-        scanner = new Html5Qrcode(elementId, {
-          verbose: false,
-          // 台灣商品常見的一維條碼格式
-          formatsToSupport: [
-            Html5QrcodeSupportedFormats.EAN_13,
-            Html5QrcodeSupportedFormats.EAN_8,
-            Html5QrcodeSupportedFormats.UPC_A,
-            Html5QrcodeSupportedFormats.UPC_E,
-          ],
-          // 瀏覽器支援時改用內建 BarcodeDetector(Android Chrome 底層為 Google 的條碼引擎)
-          useBarCodeDetectorIfSupported: true,
-        });
-
-        await scanner.start(
-          { facingMode: "environment" },
-          {
-            fps: 10,
-            // 一維條碼較寬扁,掃描框取畫面寬 80%、高 40%
-            qrbox: (w, h) => ({
-              width: Math.floor(w * 0.8),
-              height: Math.floor(h * 0.4),
-            }),
-            videoConstraints: {
+        const [{ createBarcodeDecoder }, media] = await Promise.all([
+          import("@/lib/barcode-decoder"),
+          navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: {
               facingMode: { ideal: "environment" },
               width: { ideal: 1920 },
               height: { ideal: 1080 },
             },
-          },
-          (decodedText) => {
-            if (cancelled || !/^\d{8,14}$/.test(decodedText)) return;
-            cancelled = true;
-            onDetectedRef.current(decodedText);
-          },
-          undefined,
-        );
+          })
+          // 立即記下串流,元件卸載時才關得掉相機
+          .then((s) => (stream = s)),
+        ]);
         if (cancelled) return;
-        setStarting(false);
 
         // 支援的裝置開啟連續對焦,近距離拍條碼較不易模糊
-        const caps = scanner.getRunningTrackCapabilities() as MediaTrackCapabilities & {
-          focusMode?: string[];
-        };
-        if (caps.focusMode?.includes("continuous")) {
-          await scanner
-            .applyVideoConstraints({
+        const [track] = media.getVideoTracks();
+        const caps = track.getCapabilities?.() as
+          | (MediaTrackCapabilities & { focusMode?: string[] })
+          | undefined;
+        if (caps?.focusMode?.includes("continuous")) {
+          await track
+            .applyConstraints({
               advanced: [{ focusMode: "continuous" } as MediaTrackConstraintSet],
             })
             .catch(() => {});
         }
+
+        const video = videoRef.current!;
+        video.srcObject = media;
+        await video.play();
+        if (cancelled) return;
+        setStarting(false);
+
+        const decode = createBarcodeDecoder();
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+
+        // 以 setTimeout 串接,確保上一張辨識完才處理下一張
+        const tick = () => {
+          if (cancelled) return;
+          const vw = video.videoWidth;
+          const vh = video.videoHeight;
+          if (vw > 0 && vh > 0) {
+            const sw = Math.floor(vw * CROP_WIDTH_RATIO);
+            const sh = Math.floor(vh * CROP_HEIGHT_RATIO);
+            const scale = Math.min(1, MAX_DECODE_WIDTH / sw);
+            canvas.width = Math.floor(sw * scale);
+            canvas.height = Math.floor(sh * scale);
+            ctx.drawImage(
+              video,
+              (vw - sw) / 2,
+              (vh - sh) / 2,
+              sw,
+              sh,
+              0,
+              0,
+              canvas.width,
+              canvas.height,
+            );
+            const { data, width, height } = ctx.getImageData(
+              0,
+              0,
+              canvas.width,
+              canvas.height,
+            );
+            const code = decode(data, width, height);
+            if (code) {
+              cancelled = true;
+              onDetectedRef.current(code);
+              return;
+            }
+          }
+          timer = setTimeout(tick, SCAN_INTERVAL_MS);
+        };
+        tick();
       } catch (err) {
         if (cancelled) return;
         setStarting(false);
@@ -103,38 +126,32 @@ export default function BarcodeScanner({
       }
     }
 
-    async function stop() {
-      if (!scanner?.isScanning) return;
-      try {
-        await scanner.stop();
-        scanner.clear();
-      } catch {
-        // 已停止或尚未完全啟動時忽略
-      }
-    }
-
-    lifecycle = lifecycle.then(start);
+    void start();
     return () => {
       cancelled = true;
-      lifecycle = lifecycle.then(stop);
+      clearTimeout(timer);
+      stream?.getTracks().forEach((t) => t.stop());
     };
-  }, [elementId]);
+  }, []);
 
   return (
     <div className="flex flex-col gap-2">
       <div className="relative mx-auto w-full max-w-sm overflow-hidden rounded-xl bg-black">
-        <div id={elementId} className="w-full [&_video]:!w-full [&_video]:object-cover" />
-        {(starting || error) && (
-          <p className="flex aspect-video items-center justify-center px-3 text-center text-xs text-white">
-            {error ?? "啟動相機中…"}
-          </p>
+        <video
+          ref={videoRef}
+          className="aspect-video w-full object-cover"
+          muted
+          playsInline
+        />
+        {!error && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <div className="h-[40%] w-[80%] rounded-lg border-2 border-emerald-400 shadow-[0_0_0_9999px_rgba(0,0,0,0.4)]" />
+          </div>
         )}
-      </div>
-      {!starting && !error && (
-        <p className="text-center text-xs text-zinc-500 dark:text-zinc-500">
-          將條碼置於框內,保持約 10 公分以上距離
+        <p className="pointer-events-none absolute bottom-2 left-0 right-0 px-3 text-center text-xs text-white">
+          {error ?? (starting ? "啟動相機中…" : "將條碼置於框內,保持約 10 公分以上距離")}
         </p>
-      )}
+      </div>
       <button
         type="button"
         onClick={onClose}
