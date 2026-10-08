@@ -75,13 +75,33 @@ export function toMacros(raw: FoodResult["nutriments"]): Macros {
 
 export const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
+export const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
+
 export const BARCODE_PATTERN = /^\d{8,14}$/;
+
+function formatDate(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
 /** 以使用者裝置的時區取得今天的日期 */
 export function todayString(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return formatDate(new Date());
+}
+
+/** 將 YYYY-MM-DD 解析為當地時間的 Date,避免 new Date(string) 被當成 UTC */
+export function parseDate(date: string): Date {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
+/** 取得指定日期所在月份的每一天(YYYY-MM-DD) */
+export function monthDates(date: string): string[] {
+  const d = parseDate(date);
+  const year = d.getFullYear();
+  const month = d.getMonth();
+  const days = new Date(year, month + 1, 0).getDate();
+  return Array.from({ length: days }, (_, i) => formatDate(new Date(year, month, i + 1)));
 }
 
 /** 一筆紀錄實際攝取的量(每份 × 份數),缺資料以 0 計 */

@@ -2,9 +2,11 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import AddFoodModal from "@/components/AddFoodModal";
+import DateStrip from "@/components/DateStrip";
 import {
   entryAmount,
   MEALS,
+  parseDate,
   round1,
   todayString,
   type MacroKey,
@@ -27,22 +29,34 @@ function total(entries: MealEntry[], key: MacroKey): number {
 
 export default function Home() {
   // 以使用者裝置的時區決定「今天」;伺服器端時區可能不同,先回傳空字串避免 hydration 不一致
-  const date = useSyncExternalStore(noopSubscribe, todayString, () => "");
-  const [entries, setEntries] = useState<MealEntry[]>([]);
+  const today = useSyncExternalStore(noopSubscribe, todayString, () => "");
+  // null 表示尚未切換過,顯示今天
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const date = selectedDate ?? today;
+  // 一次載入整個月的紀錄,切換日期時直接從中篩選
+  const [monthEntries, setMonthEntries] = useState<MealEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // null 表示新增視窗關閉;否則為要新增到哪一餐
   const [addingTo, setAddingTo] = useState<MealType | null>(null);
 
+  const month = today.slice(0, 7);
+  const entries = monthEntries.filter((e) => e.date === date);
+
+  const kcalByDate: Record<string, number> = {};
+  for (const e of monthEntries) {
+    kcalByDate[e.date] = (kcalByDate[e.date] ?? 0) + entryAmount(e, "energyKcal");
+  }
+
   useEffect(() => {
-    if (!date) return;
+    if (!month) return;
     let cancelled = false;
-    fetch(`/api/meals?date=${date}`)
+    fetch(`/api/meals/month?month=${month}`)
       .then(async (res) => {
         const data = await res.json();
         if (cancelled) return;
         if (!res.ok) setError(data.error ?? "讀取飲食紀錄失敗");
-        else setEntries(data as MealEntry[]);
+        else setMonthEntries(data as MealEntry[]);
       })
       .catch(() => {
         if (!cancelled) setError("網路連線發生問題,請重新整理頁面");
@@ -53,22 +67,26 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [date]);
+  }, [month]);
 
   async function handleDelete(entry: MealEntry) {
     // 先從畫面移除,失敗再放回去
-    setEntries((prev) => prev.filter((e) => e.id !== entry.id));
+    setMonthEntries((prev) => prev.filter((e) => e.id !== entry.id));
     setError(null);
     try {
       const res = await fetch(`/api/meals/${entry.id}`, { method: "DELETE" });
       if (!res.ok && res.status !== 404) throw new Error();
     } catch {
-      setEntries((prev) =>
+      setMonthEntries((prev) =>
         [...prev, entry].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
       );
       setError("刪除紀錄失敗,請稍後再試");
     }
   }
+
+  const isToday = date === today;
+  const d = date ? parseDate(date) : null;
+  const dateLabel = d ? `${d.getMonth() + 1}/${d.getDate()}` : "";
 
   return (
     <div className="flex flex-1 flex-col items-center bg-zinc-50 px-4 py-10 font-sans dark:bg-black sm:px-8">
@@ -78,13 +96,22 @@ export default function Home() {
             ai-BiteTrack
           </h1>
           <p className="text-sm text-zinc-600 dark:text-zinc-400">
-            {date} · 今日飲食紀錄
+            {date} · {isToday ? "今日" : ""}飲食紀錄
           </p>
         </header>
 
+        {today && (
+          <DateStrip
+            today={today}
+            selected={date}
+            kcalByDate={loading ? null : kcalByDate}
+            onSelect={setSelectedDate}
+          />
+        )}
+
         <section className="flex flex-col gap-3 rounded-2xl border border-black/[.08] bg-white p-4 dark:border-white/[.145] dark:bg-zinc-900">
           <h2 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
-            今日攝取
+            {isToday ? "今日" : `${dateLabel} `}攝取
           </h2>
           <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {SUMMARY.map(({ key, label, unit }) => (
@@ -174,7 +201,7 @@ export default function Home() {
           meal={addingTo}
           date={date}
           onClose={() => setAddingTo(null)}
-          onAdded={(entry) => setEntries((prev) => [...prev, entry])}
+          onAdded={(entry) => setMonthEntries((prev) => [...prev, entry])}
         />
       )}
     </div>
